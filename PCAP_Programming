@@ -1,0 +1,110 @@
+#include <stdio.h>
+#include <pcap.h>
+#include <netinet/ip.h>
+#include <netinet/tcp.h>
+#include <netinet/ether.h>
+#include <arpa/inet.h>
+
+// Ethernet header structure
+struct ethheader {
+    u_char ether_dhost[6]; // Destination MAC
+    u_char ether_shost[6]; // Source MAC
+    u_short ether_type;    // Ethernet type
+};
+
+// IP header structure
+struct ipheader {
+    u_char iph_ihl:4, iph_ver:4; // IP header length and version
+    u_char iph_tos;              // Type of service
+    u_short iph_len;             // Total length
+    u_short iph_id;              // Identification
+    u_short iph_offset;          // Fragment offset field
+    u_char iph_ttl;              // Time to live
+    u_char iph_protocol;         // Protocol type
+    u_short iph_checksum;        // Header checksum
+    struct in_addr iph_sourceip; // Source IP address
+    struct in_addr iph_destip;   // Destination IP address
+};
+
+// TCP header structure
+struct tcpheader {
+    u_short th_sport;  // Source port
+    u_short th_dport;  // Destination port
+    u_int th_seq;      // Sequence number
+    u_int th_ack;      // Acknowledgement number
+    u_char th_offx2;   // Data offset and reserved
+    u_char th_flags;   // TCP flags
+    u_short th_win;    // Window size
+    u_short th_sum;    // Checksum
+    u_short th_urp;    // Urgent pointer
+};
+
+// Callback function to process captured packets
+void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet) {
+    struct ethheader *eth = (struct ethheader *)packet;
+
+    // Ethernet type check (0x0800 indicates IPv4)
+    if (ntohs(eth->ether_type) == 0x0800) {
+        struct ipheader *ip = (struct ipheader *)(packet + sizeof(struct ethheader));
+
+        printf("\n--- Ethernet Header ---\n");
+        printf("   Source MAC: %s\n", ether_ntoa((struct ether_addr *)eth->ether_shost));
+        printf("   Destination MAC: %s\n", ether_ntoa((struct ether_addr *)eth->ether_dhost));
+
+        printf("\n--- IP Header ---\n");
+        printf("   Source IP: %s\n", inet_ntoa(ip->iph_sourceip));
+        printf("   Destination IP: %s\n", inet_ntoa(ip->iph_destip));
+
+        // Process only TCP packets (ignore UDP)
+        if (ip->iph_protocol == IPPROTO_TCP) {
+            struct tcpheader *tcp = (struct tcpheader *)(packet + sizeof(struct ethheader) + sizeof(struct ipheader));
+
+            printf("\n--- TCP Header ---\n");
+            printf("   Source Port: %u\n", ntohs(tcp->th_sport));
+            printf("   Destination Port: %u\n", ntohs(tcp->th_dport));
+
+            // Print the message (if present)
+            printf("   Message: ");
+            u_char *data = (u_char *)(packet + sizeof(struct ethheader) + sizeof(struct ipheader) + sizeof(struct tcpheader));
+            int data_len = header->len - (sizeof(struct ethheader) + sizeof(struct ipheader) + sizeof(struct tcpheader));
+            for (int i = 0; i < data_len; i++) {
+                printf("%c", data[i]);
+            }
+            printf("\n");
+        }
+    }
+}
+
+int main() {
+    pcap_t *handle;             // Handle for pcap session
+    char errbuf[PCAP_ERRBUF_SIZE]; // Error buffer
+    struct pcap_pkthdr header;    // Packet header
+    const u_char *packet;         // Packet data
+
+    // Open live pcap session on interface eth3
+    handle = pcap_open_live("ens33", BUFSIZ, 1, 1000, errbuf);
+    if (handle == NULL) {
+        printf("Error opening device: %s\n", errbuf);
+        return 1;
+    }
+
+    // Set filter for only TCP traffic (optional, can be skipped if you want all packets)
+    struct bpf_program fp;
+    char filter_exp[] = "tcp"; // Filter expression to capture only TCP packets
+    if (pcap_compile(handle, &fp, filter_exp, 0, PCAP_NETMASK_UNKNOWN) == -1) {
+        printf("Error compiling filter: %s\n", pcap_geterr(handle));
+        return 1;
+    }
+    if (pcap_setfilter(handle, &fp) == -1) {
+        printf("Error setting filter: %s\n", pcap_geterr(handle));
+        return 1;
+    }
+
+    // Start packet capture loop
+    pcap_loop(handle, -1, got_packet, NULL);
+
+    // Close pcap handle
+    pcap_close(handle);
+
+    return 0;
+}
